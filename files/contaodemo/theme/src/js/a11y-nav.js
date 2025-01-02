@@ -1,8 +1,9 @@
 class A11yNav {
-
     constructor(options) {
         this.options = this._merge({
             selector: 'header .nav-main',
+            toggle: 'header .nav-toggle',
+            minWidth: 1024,
             classes: {
                 submenuButton: 'btn-toggle-submenu',
                 expand: 'nav-expanded'
@@ -12,16 +13,23 @@ class A11yNav {
                 'expand': 'Expand menu: ',
                 'collapse': 'Collapse menu: '
             }
-        }, options || {});
+        }, options || {})
 
-        this.navigation = document.querySelector(this.options.selector);
+        this.navigation = document.querySelector(this.options.selector)
+        this.toggle = document.querySelector(this.options.toggle)
 
         if (!this.navigation) {
-            return;
+            return
         }
 
-        this.navItems = [];
+        this.dropdowns = []
+        this.active = []
+
         this._init()
+
+        this.dropdowns.forEach(dropdown => {
+            this._initDropdown(dropdown)
+        })
     }
 
     /**
@@ -33,60 +41,181 @@ class A11yNav {
         return [...new Set([...Object.keys(a), ...Object.keys(b)])].reduce((result, key) => ({
             ...result,
             [key]: "object" === typeof (a[key]) ? Object.assign({}, a[key], b[key]) : !b[key] ? a[key] : b[key]
-        }), {});
+        }), {})
     }
 
     /**
-     * Initializes navigation item and sets aria-attributes if they do not exist
+     * Placeholder button that is cloned for each submenu item
      *
      * @private
      */
-    _initItems() {
+    _createSubMenuButton() {
+        this.btn = document.createElement('button')
+        this.btn.classList.add(this.options.classes.submenuButton)
+        this.btn.ariaHasPopup = 'true'
+        this.btn.ariaExpanded = 'false'
+    }
+
+    /**
+     * Determines the focus trap targets
+     *
+     * @private
+     */
+    _initFocusTrapTargets() {
+        const nodes = [this.navigation.parentNode?.querySelector('a[href].logo'), ...this.navigation.querySelectorAll('a[href]:not([disabled]), button:not([disabled])')]
+
+        this.firstFocus = nodes[0] ?? []
+        this.lastFocus = nodes[nodes.length - 1] ?? []
+    }
+
+    /**
+     * Handles the focus trap on the open mobile navigation
+     *
+     * @private
+     */
+    _focusTrapEvent(event) {
+        if (!(event.key === 'Tab' || event.keyCode === 9))
+            return
+
+        if (document.activeElement === this.lastFocus && !event.shiftKey) {
+            event.preventDefault()
+            this.firstFocus?.focus()
+        }
+
+        if (document.activeElement === this.firstFocus && event.shiftKey) {
+            event.preventDefault()
+            this.lastFocus?.focus()
+        }
+    }
+
+    /**
+     * Adds and removes the focusTrap based on the mobile navigation state
+     *
+     * @private
+     */
+    _focusMenu() {
+        // consider the navigation state from scripts.js
+        const state = document.body.classList.contains('show-nav-mobile')
+
+        if (state)
+            document.addEventListener('keydown', this._focusTrapEvent, false)
+        else
+            document.removeEventListener('keydown', this._focusTrapEvent, false)
+    }
+
+    /**
+     * Initializes navigation items and sets aria-attributes if they do not exist
+     *
+     * @private
+     */
+    _init() {
+        this._createSubMenuButton()
+        this._initMobileToggleEvents()
+
         if (!this.navigation.ariaLabel) {
             this.navigation.ariaLabel = this.options.ariaLabels.main
         }
 
         this.navigation.querySelectorAll('li').forEach(item => {
-            item.role = 'none';
 
-            const navItem = item.firstElementChild;
+            if (item.classList.contains('submenu')) {
+                this.dropdowns.push(item)
+            }
+
+            const navItem = item.firstElementChild
 
             if (navItem.classList.contains('active')) {
-                navItem.ariaCurrent = 'page';
+                navItem.ariaCurrent = 'page'
             }
 
             if (!navItem.ariaLabel && navItem.title) {
-                navItem.ariaLabel = navItem.title;
-                navItem.removeAttribute('title');
+                navItem.ariaLabel = navItem.title
+                navItem.removeAttribute('title')
             }
+        })
 
-            this.navItems.push(navItem);
+        // Hide the active navigation on escape
+        document.addEventListener('keyup', (e) => {
+            e.key === 'Escape' && this._hideDropdown()
         })
     }
 
     /**
-     * Placeholder button that is used to clone for each submenu item
+     * Updates the aria labels and state for the dropdown buttons
      *
      * @private
      */
-    _createSubMenuButton() {
-        this.btn = document.createElement('button');
-        this.btn.classList.add(this.options.classes.submenuButton);
-        this.btn.ariaHasPopup = 'true';
-        this.btn.ariaExpanded = 'false';
+    _updateAriaState(dropdown, show) {
+        dropdown.btn.ariaLabel = (show ? this.options.ariaLabels.collapse : this.options.ariaLabels.expand) + dropdown.btn.dataset.label
+        dropdown.btn.ariaExpanded = show ? 'true' : 'false'
     }
 
     /**
-     * Updates the aria labels based on the state and toggles the expand class
+     * Collapses the dropdown
      *
      * @private
      */
-    _updateAriaState(btn) {
-        const state = btn.ariaExpanded ?? 'false';
+    _collapseSubmenu(dropdown) {
+        dropdown.classList.remove(this.options.classes.expand)
+        this._updateAriaState(dropdown, false)
+    }
 
-        btn.closest('li.submenu')?.classList.toggle(this.options.classes.expand);
-        btn.ariaLabel = (('false' === state) ? this.options.ariaLabels.collapse : this.options.ariaLabels.expand) + btn.dataset.label;
-        btn.ariaExpanded = ('false' === state) ? 'true' : 'false';
+    /**
+     * Handles hiding dropdowns. Adding no parameter will close all
+     *
+     * @private
+     */
+    _hideDropdown(dropdown = null) {
+        if (0 === this.active.length) return
+
+        // Case 1: Leaving the previous dropdown (e.g. focus left)
+        if (this.active.includes(dropdown)) {
+            this._collapseSubmenu(dropdown)
+            this.active = this.active.filter(node => node !== dropdown)
+        }
+
+        // Case 2: Not contained in the tree at all, remove everything
+        else if (null === dropdown || this.active[0] !== dropdown && !this.active[0].contains(dropdown)) {
+            this.active.forEach(node => this._collapseSubmenu(node))
+            this.active = []
+        }
+
+        // Case 3: Down the drain with everything that ain't a parent node :)
+        else {
+            this.active.filter(node => {
+                if (node.contains(dropdown)) {
+                    return true
+                }
+
+                this._collapseSubmenu(node)
+                return false
+            })
+        }
+    }
+
+    /**
+     * Shows the dropdown
+     *
+     * @private
+     */
+    _showDropdown(dropdown) {
+        this._hideDropdown(dropdown)
+
+        dropdown.classList.add(this.options.classes.expand)
+        this._updateAriaState(dropdown, true)
+
+        if (!this.active.includes(dropdown)) {
+            this.active.push(dropdown)
+        }
+    }
+
+    /**
+     * Updates the dropdown state
+     *
+     * @private
+     */
+    _toggleDropdownState(dropdown, show) {
+        show ? this._showDropdown(dropdown) : this._hideDropdown(dropdown)
     }
 
     /**
@@ -94,32 +223,74 @@ class A11yNav {
      *
      * @private
      */
-    _addSubMenuButton(item) {
-        const btn = this.btn.cloneNode();
+    _addSubMenuButton(dropdown) {
+        const item = dropdown.firstElementChild,
+              btn = this.btn.cloneNode()
 
-        btn.dataset.label = item.textContent;
-        btn.ariaLabel = this.options.ariaLabels.expand + item.textContent;
+        dropdown.btn = btn
+
+        btn.dataset.label = item.textContent
+        btn.ariaLabel = this.options.ariaLabels.expand + item.textContent
 
         btn.addEventListener('click', () => {
-            this._updateAriaState(btn);
-        });
+            const show = btn.ariaExpanded === 'false' ?? true
+            this._toggleDropdownState(dropdown, show)
+        })
 
-        item.after(btn);
+        item.after(btn)
     }
 
     /**
-     * Initializes the accessibility navigation
+     * Mouse enter event for dropdowns
      *
      * @private
      */
-    _init() {
-        this._initItems();
-        this._createSubMenuButton();
+    _mouseEnter(e, dropdown) {
+        this._toggleDropdownState(dropdown, true)
+    }
 
-        this.navItems.forEach(item => {
-            if (item.classList.contains('submenu')) {
-                this._addSubMenuButton(item);
-            }
-        });
+    /**
+     * Mouse leave event for dropdowns
+     *
+     * @private
+     */
+    _mouseLeave(e, dropdown) {
+        this._hideDropdown(dropdown)
+    }
+
+    /**
+     * Listener for the focusout event when an element loses it's focus, necessary for tab control
+     *
+     * @private
+     */
+    _focusOut(e, dropdown) {
+        if (e.relatedTarget && this.active.length > 0 && !dropdown.contains(e.relatedTarget)) {
+            this._hideDropdown(dropdown)
+        }
+    }
+
+    _initMobileToggleEvents() {
+        this._initFocusTrapTargets()
+        this._focusTrapEvent = this._focusTrapEvent.bind(this)
+
+        this.toggle?.addEventListener('click', () => {
+            if (window.innerWidth < this.options.minWidth)
+                this._focusMenu()
+        })
+    }
+
+    /**
+     * Initializes the dropdown
+     *
+     * @private
+     */
+    _initDropdown(dropdown) {
+        this._addSubMenuButton(dropdown)
+
+        const minWidth = window.innerWidth >= this.options.minWidth
+
+        dropdown.addEventListener('mouseenter', e => { minWidth && this._mouseEnter(e, dropdown) })
+        dropdown.addEventListener('mouseleave', e => { minWidth && this._mouseLeave(e, dropdown) })
+        dropdown.addEventListener('focusout', e => { minWidth && this._focusOut(e, dropdown) })
     }
 }
