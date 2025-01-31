@@ -1,5 +1,11 @@
 .module-feed-reader {
 
+  .mod_article__inner > &:not([class*='col-']) {
+    @include breakpoint(xl) {
+      grid-column: 1 / 10;
+    }
+  }
+
   header {
     a {
       text-decoration: none;
@@ -24,4 +30,3 @@
     }
   }
 }
-
